@@ -1,0 +1,121 @@
+import pandas as pd
+import numpy as np
+from astroquery.gaia import Gaia
+
+# Step 1: Query the data from Gaia DR3 for stars' RA/Dec/Distance
+def query_gaia_dr3():
+    query = """
+    SELECT TOP 1000
+        ra, dec, parallax
+    FROM gaiadr3.gaia_source
+    WHERE parallax > 0
+    """
+    job = Gaia.launch_job(query)
+    result = job.get_results()
+    return result['ra'].data, result['dec'].data, 1000 / result['parallax'].data  # Convert parallax to distance in pc
+
+# Step 2: Load the sexagesimal RA/Dec and distance data from CSV
+def load_exoplanet_data(file_path):
+    df = pd.read_csv(file_path)
+    required_columns = ['ra', 'dec', 'sy_dist']
+    
+    for col in required_columns:
+        if col not in df.columns:
+            raise ValueError(f"Column '{col}' is missing from the dataset.")
+    
+    return df
+
+# Step 3: Convert sexagesimal RA/Dec to decimal
+def sexagesimal_to_decimal(sexagesimal_str, is_ra=True):
+    parts = sexagesimal_str.split(':')
+    if len(parts) != 3:
+        raise ValueError(f"Invalid sexagesimal format: {sexagesimal_str}")
+    
+    hours_or_degrees = float(parts[0])
+    minutes = float(parts[1])
+    seconds = float(parts[2])
+    
+    decimal_value = abs(hours_or_degrees) + minutes / 60 + seconds / 3600
+    
+    if is_ra:
+        decimal_value *= 15  # 1 hour of RA equals 15 degrees
+    elif hours_or_degrees < 0:
+        decimal_value = -decimal_value
+    
+    return decimal_value
+
+# Step 4: Convert coordinates from Earth's perspective to Exoplanet's perspective
+def convert_to_exoplanet_frame(star_ra, star_dec, star_distance, exo_ra, exo_dec, exo_distance):
+    # Convert star and exoplanet coordinates to Cartesian
+    star_x, star_y, star_z = spherical_to_cartesian(star_ra, star_dec, star_distance)
+    exo_x, exo_y, exo_z = spherical_to_cartesian(exo_ra, exo_dec, exo_distance)
+    
+    # Subtract exoplanet position from star position to get new position in the exoplanet's frame
+    relative_x = star_x - exo_x
+    relative_y = star_y - exo_y
+    relative_z = star_z - exo_z
+    
+    return cartesian_to_spherical(relative_x, relative_y, relative_z)
+
+# Helper function: Spherical to Cartesian conversion
+def spherical_to_cartesian(ra, dec, distance):
+    ra_rad = np.radians(ra)
+    dec_rad = np.radians(dec)
+    x = distance * np.cos(dec_rad) * np.cos(ra_rad)
+    y = distance * np.cos(dec_rad) * np.sin(ra_rad)
+    z = distance * np.sin(dec_rad)
+    return x, y, z
+
+# Helper function: Cartesian to Spherical conversion
+def cartesian_to_spherical(x, y, z):
+    distance = np.sqrt(x**2 + y**2 + z**2)
+    dec = np.degrees(np.arcsin(z / distance))
+    ra = np.degrees(np.arctan2(y, x)) % 360
+    return ra, dec, distance
+
+# Step 5: Rotate star coordinates based on exoplanet's pole orientation
+def rotate_coordinates(ra, dec, lambda_angle, epsilon_angle):
+    lambda_rad = np.radians(lambda_angle)
+    epsilon_rad = np.radians(epsilon_angle)
+
+    x, y, z = spherical_to_cartesian(ra, dec, 1)  # Assume distance = 1 for rotation
+
+    # Rotation matrix for longitude (λ)
+    Rz = np.array([[np.cos(lambda_rad), -np.sin(lambda_rad), 0],
+                   [np.sin(lambda_rad),  np.cos(lambda_rad), 0],
+                   [0,                   0,                  1]])
+
+    # Rotation matrix for obliquity (ε)
+    Rx = np.array([[1, 0,                   0],
+                   [0, np.cos(epsilon_rad), -np.sin(epsilon_rad)],
+                   [0, np.sin(epsilon_rad),  np.cos(epsilon_rad)]])
+
+    rotation_matrix = np.dot(Rx, Rz)
+
+    rotated_coordinates = rotation_matrix @ np.array([x, y, z])
+    return cartesian_to_spherical(rotated_coordinates[0], rotated_coordinates[1], rotated_coordinates[2])
+
+# Example usage:
+# Step 1: Query Gaia stars data
+ra_stars, dec_stars, distances_stars = query_gaia_dr3()
+
+# Step 2: Load exoplanet data from CSV
+file_path = 'your_exoplanet_data.csv'  # Update with the correct path
+df_exoplanet = load_exoplanet_data(file_path)
+
+# Step 3: Convert exoplanet RA/Dec from sexagesimal to decimal
+exo_ra = sexagesimal_to_decimal(df_exoplanet['ra'][0], is_ra=True)
+exo_dec = sexagesimal_to_decimal(df_exoplanet['dec'][0], is_ra=False)
+exo_distance = df_exoplanet['sy_dist'][0]
+
+# Step 4: Convert coordinates from Earth's perspective to exoplanet's perspective
+for ra_star, dec_star, dist_star in zip(ra_stars, dec_stars, distances_stars):
+    new_ra, new_dec, new_dist = convert_to_exoplanet_frame(ra_star, dec_star, dist_star, exo_ra, exo_dec, exo_distance)
+    print(f"From Exoplanet's perspective -> RA: {new_ra:.2f}, Dec: {new_dec:.2f}, Distance: {new_dist:.2f}")
+
+# Step 5: Rotate based on the exoplanet's pole orientation
+lambda_angle = 45  # Example value
+epsilon_angle = 23.5  # Example value
+for ra_star, dec_star in zip(ra_stars, dec_stars):
+    rotated_ra, rotated_dec, _ = rotate_coordinates(ra_star, dec_star, lambda_angle, epsilon_angle)
+    print(f"Rotated RA: {rotated_ra:.2f}, Rotated Dec: {rotated_dec:.2f}")
