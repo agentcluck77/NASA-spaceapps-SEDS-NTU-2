@@ -47,12 +47,26 @@ def rotate_coordinates(x, y, z, lambda_angle, epsilon_angle):
 
 # Step 1: Load Gaia star data using astroquery
 def load_gaia_data():
-    query = "SELECT ra, dec, parallax, phot_g_mean_mag FROM gaiaedr3.gaia_source WHERE phot_g_mean_mag IS NOT NULL"
+    query = "SELECT ra, dec, parallax, phot_g_mean_mag FROM gaiaedr3.gaia_source WHERE parallax > 0 AND phot_g_mean_mag IS NOT NULL"
+    #query = "SELECT ra, dec, parallax, phot_g_mean_mag FROM gaiadr3.gaia_source WHERE parallax > 0 AND (1000 / parallax) < 20 AND phot_g_mean_mag IS NOT NULL"
     job = Gaia.launch_job(query)
+    
     gaia_star_data = job.get_results()
+    
+    # Convert the data to a DataFrame
+    gaia_star_data = gaia_star_data.to_pandas()
+    
+    # Convert columns to float
+    columns_to_convert = ['ra', 'dec', 'parallax', 'phot_g_mean_mag']
+    gaia_star_data[columns_to_convert] = gaia_star_data[columns_to_convert].apply(pd.to_numeric, errors='coerce')
     
     # Convert parallax to distance (in parsecs)
     gaia_star_data['distance'] = 1000 / gaia_star_data['parallax'].astype(float)  # Distance in parsecs
+
+
+    print(f"Number of stars retrieved: {len(gaia_star_data)}")
+
+
     return gaia_star_data
 
 # Step 2: Load exoplanet characteristics from CSV
@@ -83,8 +97,12 @@ def convert_coordinates(row, exoplanet_ra, exoplanet_dec, exoplanet_distance, la
     new_ra, new_dec, new_distance = cartesian_to_spherical(x_rotated, y_rotated, z_rotated)
     
     apparent_mag_earth = row['phot_g_mean_mag']
-    apparent_mag_planet = apparent_mag_earth + 5 * (np.log10(distance_star / new_distance))
-
+    
+    if new_distance > 0 and distance_star> 0:
+        apparent_mag_planet = apparent_mag_earth + 5 * (np.log10(distance_star / new_distance))
+    else:
+        apparent_mag_planet = np.nan  # or some other value, e.g., 'inf' or a large number
+    #apparent_mag_planet = apparent_mag_earth + 5 * (np.log10(distance_star / new_distance))
     return new_ra, new_dec, new_distance, apparent_mag_planet
 
 # Main function to execute the process
@@ -95,16 +113,15 @@ def main():
     # Load exoplanet characteristics from CSV
     exoplanet_data = load_exoplanet_data(r'C:\Users\harin\Downloads\PS_2024.10.06_00.12.35.csv')  # Adjust the path as needed
 
-    # Extract first exoplanet's parameters
-    print(exoplanet_data['pl_name'].values[0])
-    exoplanet_ra = exoplanet_data['ra'].values[0].astype(float) #degree
-    exoplanet_dec = exoplanet_data['dec'].values[0].astype(float)  #degree
-    exoplanet_distance = exoplanet_data['sy_dist'].values[0].astype(float)  # Distance in parsecs
-    lambda_angle = exoplanet_data['pl_orbincl'].values[0].astype(float)  # Inclination angle
-    epsilon_angle = exoplanet_data['pl_trueobliq'].values[0].astype(float)  # True obliquity angle
+    # Extract 6th exoplanet's parameters(since we use index 7) 
+    print(exoplanet_data['pl_name'].values[7])
+    exoplanet_ra = exoplanet_data['ra'].values[7].astype(float) #degree
+    exoplanet_dec = exoplanet_data['dec'].values[7].astype(float)  #degree
+    exoplanet_distance = exoplanet_data['sy_dist'].values[7].astype(float)  # Distance in parsecs
+    lambda_angle = exoplanet_data['pl_orbincl'].values[7].astype(float)  # Inclination angle
+    epsilon_angle = exoplanet_data['pl_trueobliq'].values[7].astype(float)  # True obliquity angle
 
     # Convert the coordinates for each star
-    gaia_star_data = gaia_star_data.to_pandas()
     converted_data = gaia_star_data.apply(lambda row: convert_coordinates(row, exoplanet_ra, exoplanet_dec, exoplanet_distance, lambda_angle, epsilon_angle), axis=1)
 
     # Create a new DataFrame with converted metrics
@@ -112,7 +129,7 @@ def main():
 
     # Combine the converted data with original star data
     final_data = pd.concat([gaia_star_data.reset_index(drop=True), converted_df], axis=1)
-
+    print(1)
     # Save the final data to a CSV file
     final_data.to_csv('converted_star_data.csv', index=False)
 
